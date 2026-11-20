@@ -38,10 +38,10 @@ The default branch described a Swift template, and it contained no runnable exam
 | 6. Changesets | Per-PR fragments, a maximum semantic bump, a generated changelog and guardrails for generated version files. Tests cover docs-only edits, existing fragments and version bumps. |
 | 7. Actual merge | Check out the GitHub merge preview and merge the newest base SHA once per run. All checking jobs use that base. Test the queue's merge group commit when present. |
 | 8. Pre-commit hook | Staged Swift lint and line count use the index, including staged formatter configuration. Gitleaks checks staged content with redacted output. |
-| 9. Release automation | Default-branch and manual runs use the Actions token to publish an atomic metadata commit and SwiftPM tag. Recover a missing GitHub Release by reading the tag's changelog. No third-party credential is necessary for the source release. |
+| 9. Release automation | Default-branch and manual runs use the Actions token to publish an atomic metadata commit and SwiftPM tag. Recover a missing GitHub Release by reading the tag's changelog. A separate job verifies the public tag and GitHub Release anonymously. |
 | 10. Concurrency | Scope cancellation to read-only checks. Serialize publishing jobs, classify ref-policy denials separately, retry bounded races and recompute metadata without publishing untested source. |
 | 11. Secrets detection | Gitleaks scans introduced commits so a later deletion in the same PR cannot hide the earlier leak from CI. |
-| 12. Documentation validation | Required headings, size checks and Lychee local-link validation catch deterministic repository errors. Upstream URLs in this case study are the primary research sources. |
+| 12. Documentation validation | Required headings, size checks and Lychee local-link validation catch deterministic repository errors. A weekly report checks external URLs and identifies upstream failures without blocking a source release. |
 | 13. Native multi-arch containers | Native amd64/arm64 matrix, per-architecture caches, smoke tests, digest-based OCI manifest and read-back verification with an anonymous token. Source releases complete before the optional mirror. |
 | 14. Workflow lint | Actionlint's image includes ShellCheck. Zizmor emits medium-confidence-or-higher annotations without SARIF upload. |
 | 15. Dependency audit | Scan committed SwiftPM pins with OSV on Swift changes and weekly. Fail for any reported advisory. Require a tracked lockfile as soon as the package resolves external dependencies. |
@@ -58,5 +58,7 @@ python3 swift/ci/check_swift.py
 python3 swift/ci/docs.py standalone swift/ci
 SWIFT_PACKAGE=. bash swift/ci/test-package.sh
 ```
+
+The Linux pilot used UI's actual root package, specification fixtures and renderer sources at [revision 5a7de31](https://github.com/link-foundation/ui/tree/5a7de318166319a0847c9a339fe836c8843b4588). Its 33 XCTest cases passed when run through the template's package test step. See the [monorepo guide](../../monorepo.md) for the proposed scopes.
 
 The release test uses a disposable bare Git remote. It exercises the actual atomic Git push, simulates a failed GitHub Release request, retries, and asserts that the original tag is recovered. Registry tests use HTTP fixtures for the upload probe and both-architecture verification. The live release workflow only publishes from `main`. Its GitHub and GHCR write paths run after merge with the repository's Actions token. Hosted test and optional native container results are recorded on [PR #2](https://github.com/link-foundation/swift-ai-driven-development-pipeline-template/pull/2/checks).

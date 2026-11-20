@@ -162,6 +162,22 @@ class RegistryTests(unittest.TestCase):
                 registry.probe("owner/name")
             request.assert_called_once()
 
+    def test_prepare_stops_if_a_private_image_already_exists(self):
+        with patch.object(registry, "platforms", side_effect=[None, {"linux/amd64"}]), patch.object(
+            registry, "probe"
+        ) as probe:
+            with self.assertRaisesRegex(ValueError, "Make the GHCR package public"):
+                registry.prepare("owner/name", "v1.0.0")
+            probe.assert_not_called()
+
+    def test_prepare_stops_if_registry_state_is_unknown(self):
+        with patch.object(registry, "platforms", side_effect=registry.RegistryError("manifest read", 503)), patch.object(
+            registry, "probe"
+        ) as probe:
+            with self.assertRaisesRegex(ValueError, "unknown"):
+                registry.prepare("owner/name", "v1.0.0")
+            probe.assert_not_called()
+
     def test_verify_requires_both_native_architectures(self):
         with patch.object(registry.time, "sleep"), redirect_stdout(io.StringIO()):
             with patch.object(registry, "platforms", return_value={"linux/amd64"}):

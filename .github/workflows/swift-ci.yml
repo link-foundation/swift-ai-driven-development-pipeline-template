@@ -31,6 +31,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: swift-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.package-directory || '.' }}
   cancel-in-progress: true
@@ -91,7 +95,7 @@ jobs:
       - name: Scan introduced commits for secrets
         run: bash "$PIPELINE/scan-secrets.sh"
       - name: Validate changesets and generated files
-        if: env.SWIFT_MODE == 'standalone' && github.event_name == 'pull_request'
+        if: env.SWIFT_MODE == 'standalone' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         env:
           CODE_CHANGED: ${{ needs.detect.outputs.code }}
         run: python3 "$PIPELINE/check-changesets.py" "$CI_BASE" "$CODE_CHANGED"
@@ -167,6 +171,25 @@ jobs:
         with:
           args: "--offline --no-progress 'README.md' 'CHANGELOG.md' 'docs/**/*.md' 'swift/**/*.md'"
           token: ''
+
+  external-links:
+    if: github.event_name == 'schedule' && inputs.mode == 'standalone'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check public documentation URLs
+        id: links
+        continue-on-error: true
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: "--no-progress --timeout 15 'README.md' 'docs/**/*.md' 'swift/**/*.md'"
+          token: ''
+      - name: Explain upstream link failures
+        if: steps.links.outcome == 'failure'
+        run: echo "::warning::An external link check was unsuccessful. See the link report for HTTP errors."
 
   dependencies:
     needs: detect

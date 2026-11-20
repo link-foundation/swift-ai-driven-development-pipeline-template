@@ -10,6 +10,10 @@ on:
 
 permissions: {}
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   preflight:
     runs-on: ubuntu-24.04
@@ -28,17 +32,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-        run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
-          if docker buildx imagetools inspect --raw "$image" | jq -e '
-            [.manifests[].platform | .os + "/" + .architecture] |
-            (index("linux/amd64") != null and index("linux/arm64") != null)
-          ' >/dev/null; then
-            echo "::notice::The public image already serves both architectures."
-            exit 0
-          fi
-          python3 swift/ci/registry.py probe
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        run: python3 swift/ci/registry.py prepare "$VERSION"
 
   native:
     needs: preflight
@@ -130,4 +124,8 @@ jobs:
       - name: Verify the public index from an unauthenticated runner
         env:
           VERSION: ${{ inputs.version }}
-        run: python3 swift/ci/registry.py verify "$VERSION"
+        run: |
+          python3 swift/ci/registry.py verify "$VERSION"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          docker pull --platform linux/amd64 "$image"
+          docker pull --platform linux/arm64 "$image"

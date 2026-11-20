@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 
-from metadata import CHANGELOG, CHANGESETS, INITIAL_VERSION, VERSION_FILE, advance, git
+from metadata import CHANGELOG, CHANGESETS, INITIAL_VERSION, SEMVER, VERSION_FILE, advance, git
 from metadata import next_version, notes_for_tag, read_changesets, version
 
 REMOTE = ["git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
@@ -81,7 +81,16 @@ def output(**values):
             print(f"{key}={value}", file=stream)
 
 
-def prepare():
+def prepare(image_version):
+    if image_version:
+        if os.getenv("IMAGES_ENABLED") != "true":
+            raise ValueError("Set ENABLE_SWIFT_IMAGES=true before requesting a GHCR repair.")
+        if not image_version.startswith("v") or not SEMVER.fullmatch(image_version[1:]):
+            raise ValueError("Specify a stable tag such as v0.1.0 for GHCR repair.")
+        published = available_releases().get(image_version)
+        if not published or published["draft"] or published["prerelease"]:
+            raise ValueError(f"{image_version} must have a stable GitHub Release before repairing GHCR.")
+
     current = version()
     pending = read_changesets()
     missing = missing_releases(current)
@@ -91,7 +100,8 @@ def prepare():
         check_archive("HEAD")
     else:
         print("::notice::No new changesets or missing GitHub Releases.")
-    output(publish=str(needed).lower(), version="" if current == INITIAL_VERSION else f"v{current}")
+    output(publish=str(needed).lower(), version="" if current == INITIAL_VERSION else f"v{current}",
+           **{"image-version": image_version})
 
 
 def head_has_changed(validated, tip):
@@ -128,7 +138,8 @@ def publish(validated, branch):
             publish_release(tag)
         entries = read_changesets()
         if not entries:
-            output(version="" if current == INITIAL_VERSION else f"v{current}", commit=git("rev-parse", "HEAD"))
+            tag = "" if current == INITIAL_VERSION else f"v{current}"
+            output(version=tag, commit=git("rev-parse", f"{tag}^{{commit}}") if tag else "")
             return
 
         target = next_version(current, entries)
@@ -161,10 +172,11 @@ def main():
     parser.add_argument("operation", choices=["prepare", "publish"])
     parser.add_argument("--validated", default=os.getenv("GITHUB_SHA", "HEAD"))
     parser.add_argument("--branch", default="main")
+    parser.add_argument("--image-version", default="")
     options = parser.parse_args()
     try:
         if options.operation == "prepare":
-            prepare()
+            prepare(options.image_version)
         else:
             publish(options.validated, options.branch)
     except (ValueError, subprocess.CalledProcessError) as error:

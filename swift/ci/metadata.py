@@ -26,7 +26,7 @@ class Changeset:
 
 def read_changesets():
     entries = []
-    for path in sorted(CHANGESETS.glob("*.md")):
+    for path in sorted(CHANGESETS.glob("*")):
         if path.name == "README.md":
             continue
         if path.is_symlink() or not path.is_file() or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.md", path.name):

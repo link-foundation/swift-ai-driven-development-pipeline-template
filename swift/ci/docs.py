@@ -24,6 +24,8 @@ def main():
         }
         for name, headings in sections.items():
             path = Path(name)
+            if name != "README.md" and not path.exists():
+                continue
             lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
             problems.extend(f"{path} needs a {heading} section." for heading in headings if heading not in lines)
     for problem in problems:
