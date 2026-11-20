@@ -112,7 +112,11 @@ jobs:
           docker buildx imagetools create -t "$image:$VERSION" "${digests[@]}"
 
   verify:
-    needs: push
+    needs: [preflight, push]
+    if: >-
+      !cancelled() && needs.preflight.result == 'success' &&
+      (needs.push.result == 'success' ||
+      (needs.preflight.outputs.version == '' && (github.event_name == 'workflow_dispatch' || github.run_attempt > 1)))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

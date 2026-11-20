@@ -100,7 +100,9 @@ def prepare(image_version):
         check_archive("HEAD")
     else:
         print("::notice::No new changesets or missing GitHub Releases.")
-    output(publish=str(needed).lower(), version="" if current == INITIAL_VERSION else f"v{current}",
+    tag = "" if current == INITIAL_VERSION else f"v{current}"
+    output(publish=str(needed).lower(), version=tag,
+           commit=git("rev-parse", f"{tag}^{{commit}}") if tag else "",
            **{"image-version": image_version})
 
 

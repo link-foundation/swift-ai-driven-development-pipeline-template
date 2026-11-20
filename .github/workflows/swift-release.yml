@@ -30,6 +30,7 @@ jobs:
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.plan.outputs.commit }}
       image-version: ${{ steps.plan.outputs.image-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,20 +78,24 @@ jobs:
         run: python3 swift/ci/release.py publish
 
   verify-source:
-    needs: publish
-    if: needs.publish.outputs.version != '' && github.event.repository.private == false
+    needs: [prepare, qualify, publish]
+    if: >-
+      !cancelled() && github.event.repository.private == false && needs.qualify.result == 'success' &&
+      ((needs.publish.result == 'success' && needs.publish.outputs.version != '') ||
+      (needs.publish.result == 'skipped' && needs.prepare.outputs.publish == 'false' && needs.prepare.outputs.version != ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
       - name: Verify the SwiftPM tag and release anonymously
         env:
-          VERSION: ${{ needs.publish.outputs.version }}
-          COMMIT: ${{ needs.publish.outputs.commit }}
+          VERSION: ${{ needs.publish.outputs.version || needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.publish.outputs.commit || needs.prepare.outputs.commit }}
           GIT_TERMINAL_PROMPT: '0'
         run: |
-          tag=$(git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "refs/tags/$VERSION")
-          test "${tag%%$'\t'*}" = "$COMMIT"
+          refs=$(git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$VERSION" "refs/tags/$VERSION^{}")
+          awk -v commit="$COMMIT" '$1 == commit { found = 1 } END { exit !found }' <<< "$refs"
           curl --silent --show-error --fail --retry 2 \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" |
             jq -e --arg tag "$VERSION" '.tag_name == $tag and (.draft | not) and (.prerelease | not)'
