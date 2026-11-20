@@ -1,0 +1,77 @@
+name: Swift Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: check-${{ github.workflow }}-${{ github.ref }}-prepare
+      cancel-in-progress: true
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Plan release and probe GitHub publishing permissions
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 swift/ci/release.py prepare
+
+  qualify:
+    needs: prepare
+    uses: ./.github/workflows/swift-ci.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires the GitHub-supported relative syntax.
+    with:
+      mode: standalone
+      full-validation: ${{ needs.prepare.outputs.publish == 'true' }}
+
+  publish:
+    needs: [prepare, qualify]
+    if: >-
+      !cancelled() && needs.qualify.result == 'success' && needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: main-writer-${{ github.repository }}-main
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Publish validated SwiftPM tag and GitHub Release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 swift/ci/release.py publish
+
+  images:
+    needs: [prepare, qualify, publish]
+    if: >-
+      !cancelled() && needs.qualify.result == 'success' && vars.ENABLE_SWIFT_IMAGES == 'true' &&
+      ((needs.publish.result == 'success' && needs.publish.outputs.version != '') ||
+      (needs.publish.result == 'skipped' && needs.prepare.outputs.publish == 'false' && needs.prepare.outputs.version != ''))
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/swift-images.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires the GitHub-supported relative syntax.
+    with:
+      version: ${{ needs.publish.outputs.version || needs.prepare.outputs.version }}
