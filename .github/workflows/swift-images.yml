@@ -1,0 +1,135 @@
+name: Swift OCI Images
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Published SwiftPM Git tag
+        type: string
+        required: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.probe.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Skip already published images or probe GHCR writes
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: python3 swift/ci/registry.py prepare "$VERSION"
+
+  native:
+    needs: preflight
+    if: needs.preflight.outputs.version != ''
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.version }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          tags: swift-release:${{ matrix.arch }}
+          outputs: type=docker,dest=${{ runner.temp }}/swift-${{ matrix.arch }}.tar
+          cache-from: type=gha,scope=swift-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=swift-${{ matrix.arch }}
+      - name: Smoke-test the executable on its native architecture
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker load -i "$RUNNER_TEMP/swift-$ARCH.tar"
+          test "$(docker run --rm "swift-release:$ARCH" CI)" = 'Hello, CI!'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: swift-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/swift-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: main-writer-${{ github.repository }}-main
+      cancel-in-progress: false
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: swift-image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+      - name: Push platform images and assemble the versioned index
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-auth
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          digests=()
+          for arch in amd64 arm64; do
+            docker load -i "$RUNNER_TEMP/images/swift-$arch.tar"
+            docker tag "swift-release:$arch" "$image:$VERSION-$arch"
+            docker push "$image:$VERSION-$arch"
+            digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$VERSION-$arch")
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            digests+=("$image@$digest")
+          done
+          docker buildx imagetools create -t "$image:$VERSION" "${digests[@]}"
+
+  verify:
+    needs: [preflight, push]
+    if: >-
+      !cancelled() && needs.preflight.result == 'success' &&
+      (needs.push.result == 'success' ||
+      (needs.preflight.outputs.version == '' && (github.event_name == 'workflow_dispatch' || github.run_attempt > 1)))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the public index from an unauthenticated runner
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 swift/ci/registry.py verify "$VERSION"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          docker pull --platform linux/amd64 "$image"
+          docker pull --platform linux/arm64 "$image"

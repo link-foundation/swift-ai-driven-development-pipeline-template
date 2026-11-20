@@ -1,0 +1,7 @@
+**
+!Package*.swift
+!Package.resolved
+!Sources/
+!Sources/**
+!Tests/
+!Tests/**

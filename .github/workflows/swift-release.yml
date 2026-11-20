@@ -1,0 +1,116 @@
+name: Swift Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image-version:
+        description: Optional published version to repair in GHCR, for example v0.1.0
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: check-${{ github.workflow }}-${{ github.ref }}-prepare
+      cancel-in-progress: true
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.plan.outputs.commit }}
+      image-version: ${{ steps.plan.outputs.image-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Plan release and probe GitHub publishing permissions
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_VERSION: ${{ inputs.image-version }}
+          IMAGES_ENABLED: ${{ vars.ENABLE_SWIFT_IMAGES }}
+        run: python3 swift/ci/release.py prepare --image-version "$IMAGE_VERSION"
+
+  qualify:
+    needs: prepare
+    uses: ./.github/workflows/swift-ci.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires the GitHub-supported relative syntax.
+    with:
+      mode: standalone
+      full-validation: ${{ needs.prepare.outputs.publish == 'true' }}
+
+  publish:
+    needs: [prepare, qualify]
+    if: >-
+      !cancelled() && needs.qualify.result == 'success' && needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: main-writer-${{ github.repository }}-main
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Publish validated SwiftPM tag and GitHub Release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 swift/ci/release.py publish
+
+  verify-source:
+    needs: [prepare, qualify, publish]
+    if: >-
+      !cancelled() && github.event.repository.private == false && needs.qualify.result == 'success' &&
+      ((needs.publish.result == 'success' && needs.publish.outputs.version != '') ||
+      (needs.publish.result == 'skipped' && needs.prepare.outputs.publish == 'false' && needs.prepare.outputs.version != ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify the SwiftPM tag and release anonymously
+        env:
+          VERSION: ${{ needs.publish.outputs.version || needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.publish.outputs.commit || needs.prepare.outputs.commit }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          refs=$(git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$VERSION" "refs/tags/$VERSION^{}")
+          awk -v commit="$COMMIT" '$1 == commit { found = 1 } END { exit !found }' <<< "$refs"
+          curl --silent --show-error --fail --retry 2 \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" |
+            jq -e --arg tag "$VERSION" '.tag_name == $tag and (.draft | not) and (.prerelease | not)'
+
+  images:
+    needs: [prepare, qualify, publish, verify-source]
+    if: >-
+      !cancelled() && needs.qualify.result == 'success' && vars.ENABLE_SWIFT_IMAGES == 'true' &&
+      (needs.verify-source.result == 'success' || needs.verify-source.result == 'skipped') &&
+      ((needs.prepare.outputs.image-version != '' && needs.publish.result != 'failure' && needs.publish.result != 'cancelled') ||
+      (needs.publish.result == 'success' && needs.publish.outputs.version != '') ||
+      (needs.publish.result == 'skipped' && needs.prepare.outputs.publish == 'false' && needs.prepare.outputs.version != ''))
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/swift-images.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires the GitHub-supported relative syntax.
+    with:
+      version: ${{ needs.prepare.outputs.image-version || needs.publish.outputs.version || needs.prepare.outputs.version }}
